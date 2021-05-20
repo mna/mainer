@@ -1,5 +1,5 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/mna/mainer.svg)](https://pkg.go.dev/github.com/mna/mainer)
-![Build Status](https://github.com/mna/mainer/actions/workflows/test.yml/badge.svg?branch=main)
+[![Build Status](https://github.com/mna/mainer/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/mna/mainer/actions)
 
 # mainer
 
