@@ -38,11 +38,11 @@ func (c *cmd) Main(args []string, stdio mainer.Stdio) mainer.ExitCode {
   // parse the flags, using env var <CMD>_FOO_BAR for the --foo-bar
   // flag if the flag is not set (where <CMD> defaults to the base name
   // of the executable, in uppercase and without extension).
- p := &mainer.Parser{EnvVars: true}
- if err := p.Parse(args, c); err != nil {
-   fmt.Fprintln(stdio.Stderr, err)
-   return mainer.InvalidArgs
- }
+  p := &mainer.Parser{EnvVars: true}
+  if err := p.Parse(args, c); err != nil {
+    fmt.Fprintln(stdio.Stderr, err)
+    return mainer.InvalidArgs
+  }
 
   // execute the command...
   return mainer.Success
