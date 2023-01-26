@@ -139,17 +139,17 @@ func TestParseFlags(t *testing.T) {
 			},
 		},
 		{
-			args: []string{"-sp", "hello"},
+			args: []string{"- sp ", "hello"},
 			want: &F{
 				Spaced: "hello",
-				flags:  map[string]bool{"sp": true},
+				flags:  map[string]bool{" sp ": true},
 			},
 		},
 		{
-			args: []string{"--spaced", "hello"},
+			args: []string{"-- spaced ", "hello"},
 			want: &F{
 				Spaced: "hello",
-				flags:  map[string]bool{"sp": true},
+				flags:  map[string]bool{" sp ": true},
 			},
 		},
 		{

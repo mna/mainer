@@ -136,7 +136,6 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 
 		var canonFlag string
 		for _, nm := range names {
-			nm = strings.TrimSpace(nm)
 			if nm == "" {
 				continue
 			}
