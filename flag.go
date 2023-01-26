@@ -74,6 +74,9 @@ type Parser struct {
 // number of times the flag was provided. As for SetFlags, the key is
 // canonicalized to the first flag defined on the field.
 //
+// Environment variables parsing has no effect on the values reported by
+// SetFlags and SetFlagsCount, only the actual flags parsed from the args.
+//
 // It panics if v is not a pointer to a struct or if a flag is defined with an
 // unsupported type.
 func (p *Parser) Parse(args []string, v interface{}) error {
@@ -83,7 +86,6 @@ func (p *Parser) Parse(args []string, v interface{}) error {
 		}
 	}
 
-	// TODO: support []string (and other types?) that collects all values set via multiple flags
 	// TODO: support []string (and other types?) that collects all values via comma-separated list
 
 	if err := p.parseFlags(args, v); err != nil {
@@ -98,6 +100,8 @@ func (p *Parser) Parse(args []string, v interface{}) error {
 
 var durationType = reflect.TypeOf(time.Duration(0))
 
+// valueSetter wraps a flag's Value with one that calls a setter func when the
+// flag is set. Other flag.Value methods are the same as the wrapped Value.
 type valueSetter struct {
 	flag.Value
 	setter func(string) error
@@ -117,21 +121,25 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 		return nil
 	}
 
+	// sliceFs is an internal flagset used only if slices are present
+	var sliceFs *flag.FlagSet
+
 	// create a FlagSet that is silent and only returns any error
 	// it encounters.
 	fs := flag.NewFlagSet("", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.Usage = nil
 
-	// extract the flags from the struct
+	// extract the flags from the struct (v must be a pointer, so dereference it
+	// here and let reflect panic if it isn't)
 	val := reflect.ValueOf(v).Elem()
-	str := val.Type()
+	strct := val.Type()
 	count := val.NumField()
 	canonLookup := make(map[string]string, count) // key is flag name, value is canonical name
 
 	for i := 0; i < count; i++ {
 		fld := val.Field(i)
-		typ := str.Field(i)
+		typ := strct.Field(i)
 		names := strings.Split(typ.Tag.Get("flag"), ",")
 
 		var canonFlag string
@@ -144,49 +152,59 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 			}
 			canonLookup[nm] = canonFlag
 
-			// check for well-known types first, as their underlying type might be a
-			// basic kind (so it must be checked before the basic kinds are
-			// processed).
-			switch typ.Type {
-			case durationType:
-				fs.DurationVar(fld.Addr().Interface().(*time.Duration), nm, fld.Interface().(time.Duration), "")
-			default:
-				// for flag.TextVar to be supported, the type must implement both
-				// TextUnmarshaler and TextMarshaler. As a convenience, if the type
-				// does not implement TextUnmarshaler but a pointer to the type does,
-				// support it.
-				tuv, okuv := fld.Interface().(encoding.TextUnmarshaler)
-				tmv, okmv := fld.Interface().(encoding.TextMarshaler)
-				tup, okup := fld.Addr().Interface().(encoding.TextUnmarshaler)
-				tmp, okmp := fld.Addr().Interface().(encoding.TextMarshaler)
-				if okuv && okmv {
-					// the field's value itself implements both
-					fs.TextVar(tuv, nm, tmv, "")
-					continue
-				} else if (okuv || okup) && (okmv || okmp) {
-					// the pointer implements the missing one, so use a pointer for the flag
-					fs.TextVar(tup, nm, tmp, "")
-					continue
+			// TODO: if flagSeparator is set and it's not a slice (or it implements
+			// TextUnmarshaler), panic, it is a developer error.
+
+			// if the field implements text (un)marshaler, then we're done,
+			// regardless of whether it is a slice or not (it's up to the unmarshaler
+			// to handle the values).
+			if t, ok := textMarshalerUnmarshaler(fld); ok {
+				fs.TextVar(t, nm, t, "")
+				continue
+			}
+
+			if fld.Kind() == reflect.Slice {
+				elemTyp := typ.Type.Elem()
+				ptr := createSliceElem(elemTyp)
+
+				if sliceFs == nil {
+					sliceFs = flag.NewFlagSet("", flag.ContinueOnError)
+				}
+				// add the slice's single-element flag value to sliceFs, will be used
+				// internally by the slice's flag on the real flagset. If it returns
+				// false, then the slice's element type is unsupported.
+				if !addToFlagSet(sliceFs, nm, ptr.Elem(), true) {
+					panic(fmt.Sprintf("unsupported flag field kind: %s (%s: []%s)", elemTyp.Kind(), typ.Name, elemTyp))
 				}
 
-				switch fld.Kind() {
-				case reflect.Bool:
-					fs.BoolVar(fld.Addr().Interface().(*bool), nm, fld.Bool(), "")
-				case reflect.String:
-					fs.StringVar(fld.Addr().Interface().(*string), nm, fld.String(), "")
-				case reflect.Int:
-					fs.IntVar(fld.Addr().Interface().(*int), nm, int(fld.Int()), "")
-				case reflect.Int64:
-					fs.Int64Var(fld.Addr().Interface().(*int64), nm, fld.Int(), "")
-				case reflect.Uint:
-					fs.UintVar(fld.Addr().Interface().(*uint), nm, uint(fld.Uint()), "")
-				case reflect.Uint64:
-					fs.Uint64Var(fld.Addr().Interface().(*uint64), nm, fld.Uint(), "")
-				case reflect.Float64:
-					fs.Float64Var(fld.Addr().Interface().(*float64), nm, fld.Float(), "")
-				default:
-					panic(fmt.Sprintf("unsupported flag field kind: %s (%s: %s)", fld.Kind(), typ.Name, typ.Type))
-				}
+				// all flags' values are getters too, except for func which isn't used by addToFlagSet.
+				sliceElemVal := sliceFs.Lookup(nm).Value.(flag.Getter)
+				fs.Func(nm, "", func(s string) error {
+					if err := sliceElemVal.Set(s); err != nil {
+						return err
+					}
+
+					newVal := reflect.ValueOf(sliceElemVal.Get())
+					if newVal.Kind() == reflect.Pointer {
+						if elemTyp.Kind() != reflect.Pointer {
+							newVal = newVal.Elem()
+						} else {
+							// must clone the value, not reuse the same destination as all
+							// values in the slice would be the same pointer.
+							newPtr := createSliceElem(elemTyp)
+							newPtr.Elem().Set(newVal.Elem())
+							newVal = newPtr
+						}
+					}
+
+					fld.Set(reflect.Append(fld, newVal))
+					return nil
+				})
+				continue
+			}
+
+			if !addToFlagSet(fs, nm, fld, false) {
+				panic(fmt.Sprintf("unsupported flag field kind: %s (%s: %s)", fld.Kind(), typ.Name, typ.Type))
 			}
 		}
 	}
@@ -196,22 +214,7 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 		// v implements SetFlagsCount, so wrap each flag in a func that will count
 		// and report the number of times it was set (under the canonical - first
 		// defined - flag name).
-		flagsCount = make(map[string]int)
-
-		fs.VisitAll(func(fl *flag.Flag) {
-			inner := fl.Value
-			setter := valueSetter{
-				Value: inner,
-				setter: func(s string) error {
-					flagsCount[canonLookup[fl.Name]]++
-					return inner.Set(s)
-				},
-			}
-			if bo, ok := inner.(interface{ IsBoolFlag() bool }); ok && bo.IsBoolFlag() {
-				setter.isBool = true
-			}
-			fl.Value = setter
-		})
+		flagsCount = setupFlagsCount(fs, canonLookup)
 	}
 
 	var nonFlags []string
@@ -219,6 +222,7 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 	for len(args) > 0 {
 		if err := fs.Parse(args); err != nil {
 			if err == flag.ErrHelp {
+				// required to bypass the stdlib's default handling of -h/-help
 				if fs.Lookup("help") == nil && sliceContains(args, "-help") {
 					return errors.New("flag provided but not defined: -help")
 				}
@@ -271,6 +275,91 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 	}
 
 	return nil
+}
+
+func addToFlagSet(fs *flag.FlagSet, nm string, val reflect.Value, canBeText bool) bool {
+	// check for well-known types first, as their underlying type might be a
+	// basic kind (so it must be checked before the basic kinds are
+	// processed).
+	switch val.Type() {
+	case durationType:
+		fs.DurationVar(val.Addr().Interface().(*time.Duration), nm, val.Interface().(time.Duration), "")
+	default:
+		if canBeText {
+			if t, ok := textMarshalerUnmarshaler(val); ok {
+				fs.TextVar(t, nm, t, "")
+				break
+			}
+		}
+
+		switch val.Kind() {
+		case reflect.Bool:
+			fs.BoolVar(val.Addr().Interface().(*bool), nm, val.Bool(), "")
+		case reflect.String:
+			fs.StringVar(val.Addr().Interface().(*string), nm, val.String(), "")
+		case reflect.Int:
+			fs.IntVar(val.Addr().Interface().(*int), nm, int(val.Int()), "")
+		case reflect.Int64:
+			fs.Int64Var(val.Addr().Interface().(*int64), nm, val.Int(), "")
+		case reflect.Uint:
+			fs.UintVar(val.Addr().Interface().(*uint), nm, uint(val.Uint()), "")
+		case reflect.Uint64:
+			fs.Uint64Var(val.Addr().Interface().(*uint64), nm, val.Uint(), "")
+		case reflect.Float64:
+			fs.Float64Var(val.Addr().Interface().(*float64), nm, val.Float(), "")
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func createSliceElem(typ reflect.Type) reflect.Value {
+	if typ.Kind() == reflect.Pointer {
+		// the only valid way to be a pointer is if the value implements
+		// TextUnmarshaler, in which case it can only have a single pointer
+		// dereference (i.e. it cannot be implemented on **T).
+		typ = typ.Elem()
+	}
+	return reflect.New(typ)
+}
+
+func setupFlagsCount(fs *flag.FlagSet, canonLookup map[string]string) map[string]int {
+	flagsCount := make(map[string]int)
+
+	fs.VisitAll(func(fl *flag.Flag) {
+		inner := fl.Value
+		setter := valueSetter{
+			Value: inner,
+			setter: func(s string) error {
+				flagsCount[canonLookup[fl.Name]]++
+				return inner.Set(s)
+			},
+		}
+		if bo, ok := inner.(interface{ IsBoolFlag() bool }); ok && bo.IsBoolFlag() {
+			setter.isBool = true
+		}
+		fl.Value = setter
+	})
+
+	return flagsCount
+}
+
+type texter interface {
+	encoding.TextMarshaler
+	encoding.TextUnmarshaler
+}
+
+func textMarshalerUnmarshaler(v reflect.Value) (texter, bool) {
+	// for flag.TextVar to be supported, the type must implement both
+	// TextUnmarshaler and TextMarshaler. As a convenience, if the type does not
+	// implement TextUnmarshaler but a pointer to the type does, support it.
+	asv, okv := v.Interface().(texter)
+	asp, okp := v.Addr().Interface().(texter)
+	if okv {
+		return asv, true
+	}
+	return asp, okp
 }
 
 func (p *Parser) parseEnvVars(args []string, v interface{}) error {

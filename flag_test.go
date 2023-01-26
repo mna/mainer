@@ -392,7 +392,7 @@ func TestParseUnsupportedFlagType(t *testing.T) {
 	)
 	c.Assert(func() {
 		_ = p.Parse([]string{"", "-h"}, &f)
-	}, qt.PanicMatches, `unsupported.+`)
+	}, qt.PanicMatches, `unsupported flag field kind: ptr \(C: \*bool\)`)
 }
 
 type E struct {
@@ -535,6 +535,11 @@ func (r reverseVal) MarshalText() ([]byte, error) {
 	return []byte(r), nil
 }
 
+func ptrRev(s string) *reverseVal {
+	r := reverseVal(s)
+	return &r
+}
+
 func TestTextUnmarshalerFlagValue(t *testing.T) {
 	c := qt.New(t)
 
@@ -561,4 +566,112 @@ func TestTextUnmarshalerFlagPtr(t *testing.T) {
 	err := p.Parse([]string{"", "-reverse", "hello"}, &f)
 	c.Assert(err, qt.IsNil)
 	c.Assert(string(*f.V), qt.Equals, "olleh")
+}
+
+type Fs struct {
+	Ss  []string        `flag:"s,string"`
+	Is  []int           `flag:"i"`
+	Us  []uint64        `flag:"u"`
+	Bs  []bool          `flag:"b"`
+	Fs  []float64       `flag:"f"`
+	Ts  []time.Duration `flag:"t"`
+	Rs  []reverseVal    `flag:"rev"`
+	Prs []*reverseVal   `flag:"prev"`
+
+	counts map[string]int
+}
+
+var equalsFs = qt.CmpEquals(cmp.AllowUnexported(Fs{}))
+
+func (f *Fs) SetFlagsCount(flags map[string]int) {
+	f.counts = flags
+}
+
+func TestParseSliceFlags(t *testing.T) {
+	c := qt.New(t)
+
+	cases := []struct {
+		args []string // args only, the 0-index is automatically added in test
+		want *Fs
+		err  string
+	}{
+		{
+			want: &Fs{},
+		},
+		{
+			args: []string{"-s", "a"},
+			want: &Fs{
+				Ss:     []string{"a"},
+				counts: map[string]int{"s": 1},
+			},
+		},
+		{
+			args: []string{"-s", "a", "--string", "b", "-s", "c"},
+			want: &Fs{
+				Ss:     []string{"a", "b", "c"},
+				counts: map[string]int{"s": 3},
+			},
+		},
+		{
+			args: []string{"-i", "1", "-s", "x", "arg", "-i", "2", "-i", "3"},
+			want: &Fs{
+				Ss:     []string{"x"},
+				Is:     []int{1, 2, 3},
+				counts: map[string]int{"i": 3, "s": 1},
+			},
+		},
+		{
+			args: []string{"-u", "1", "-u", "x"},
+			want: &Fs{},
+			err:  `invalid value "x" for flag -u`,
+		},
+		//{
+		//	args: []string{"-u", "1", "-u", "2", "-b", "-f", "3.1415", "-b"},
+		//	want: &Fs{
+		//		Us:     []uint64{1, 2},
+		//		Bs:     []bool{true, true},
+		//		Fs:     []float64{3.1415},
+		//		counts: map[string]int{"b": 2, "f": 1, "u": 2},
+		//	},
+		//},
+		{
+			args: []string{"-t", "1s", "-t", "24h"},
+			want: &Fs{
+				Ts:     []time.Duration{time.Second, 24 * time.Hour},
+				counts: map[string]int{"t": 2},
+			},
+		},
+		{
+			args: []string{"-rev", "abc", "-rev", "def"},
+			want: &Fs{
+				Rs:     []reverseVal{"cba", "fed"},
+				counts: map[string]int{"rev": 2},
+			},
+		},
+		{
+			args: []string{"-prev", "abc", "-prev", "def"},
+			want: &Fs{
+				Prs:    []*reverseVal{ptrRev("cba"), ptrRev("fed")},
+				counts: map[string]int{"prev": 2},
+			},
+		},
+	}
+
+	var p Parser
+	for _, tc := range cases {
+		c.Run(strings.Join(tc.args, " "), func(c *qt.C) {
+			var fs Fs
+			args := append([]string{""}, tc.args...)
+			err := p.Parse(args, &fs)
+
+			if tc.err != "" {
+				c.Assert(err, qt.IsNotNil)
+				c.Assert(err.Error(), qt.Contains, tc.err)
+				return
+			}
+
+			c.Assert(err, qt.IsNil)
+			c.Assert(&fs, equalsFs, tc.want)
+		})
+	}
 }
