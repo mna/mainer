@@ -59,6 +59,7 @@ func main() {
 
 ### v0.3
 
+* Requires Go 1.19+.
 * Use `github.com/caarlos0/env/v6` as environment-variable parsing package instead of `github.com/kelseyhightower/envconfig`.
 * Flag names are trimmed of any leading and trailing spaces (e.g. `flag:" h , hello "` now define the flags "h" and "hello").
 * `SetFlags` now reports set flags using a canonical flag name (the first flag defined on the field). Which of the various flag aliases was used should not matter (if it does, define distinct fields instead).
