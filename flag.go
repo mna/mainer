@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kelseyhightower/envconfig"
+	"github.com/caarlos0/env/v6"
 )
 
 // Parser implements a command-line flags parser that uses struct tags to
@@ -19,9 +19,9 @@ import (
 // them.
 //
 // The struct tag to specify flags is `flag`, while the one to specify
-// environment variables is `envconfig`. See the envconfig package for full
-// details on struct tags configuration and decoding support:
-// https://github.com/kelseyhightower/envconfig.
+// environment variables is `env`. See the env/v6 package for full details on
+// struct tags configuration and decoding support:
+// https://github.com/caarlos0/env.
 //
 // Flag parsing uses the stdlib's flag package internally, and as such shares
 // the same behaviour regarding short and long flags. However, it does
@@ -32,28 +32,39 @@ type Parser struct {
 
 	// EnvPrefix is the prefix to use in front of each flag's environment
 	// variable name. If it is empty, the name of the program (as read from the
-	// args slice at index 0) is used, with dashes replaced with underscores.
-	// Set it to "-" to disable any prefix.
+	// args slice at index 0) is used, all uppercase and with dashes replaced
+	// with underscores. Set it to "-" to disable any prefix.
 	EnvPrefix string
 }
 
 // Parse parses args into v, using struct tags to detect flags.  The tag must
 // be named "flag" and multiple flags may be set for the same field using a
 // comma-separated list. v must be a pointer to a struct and the flags must be
-// defined on fields with a type of string, int/int64, uint/uint64, float64,
-// bool or time.Duration. If Parser.EnvVars is true, flag values are
-// initialized from corresponding environment variables first.
+// defined on exported fields with a type of string, int/int64, uint/uint64,
+// float64, bool or time.Duration. If Parser.EnvVars is true, flag values are
+// initialized from corresponding environment variables first, as defined by
+// the github.com/caarlos0/env/v6 package (which is used for environment
+// parsing).
+//
+// Flags and arguments can be interspersed, but flag parsing stops if it
+// encounters the "--" value; all subsequent values are treated as arguments.
 //
 // After parsing, if v implements a Validate method that returns an error, it
 // is called and any non-nil error is returned as error.
 //
 // If v has a SetArgs([]string) method, it is called with the list of non-flag
-// arguments (a slice of strings).
+// arguments (a slice of strings) that respects the provided order.
 //
 // If v has a SetFlags(map[string]bool) method, it is called with the set of
 // flags that were explicitly set by args (a map[string]bool). Note that if
 // a field can be set with multiple flags, the actual flag used on the command
 // line will be set as key.
+//
+// If v has a SetFlagsCount(map[string]int) method, it is called with the map
+// of flags that were explicitly set by args, and the associated value is the
+// number of times the flag was provided. Unlike SetFlags, if a field can be
+// set with multiple flags, the key is canonicalized to the first flag defined
+// on the field.
 //
 // It panics if v is not a pointer to a struct or if a flag is defined with an
 // unsupported type.
@@ -63,6 +74,11 @@ func (p *Parser) Parse(args []string, v interface{}) error {
 			return err
 		}
 	}
+
+	// TODO: support encoding.TextUnmarshaler
+	// TODO: support SetFlagsCount(map[string]int) method, with flag name canonicalized
+	// TODO: support []string (and other types?) that collects all values set via multiple flags
+	// TODO: support []string (and other types?) that collects all values via comma-separated list
 
 	if err := p.parseFlags(args, v); err != nil {
 		return err
@@ -189,7 +205,7 @@ func (p *Parser) parseEnvVars(args []string, v interface{}) error {
 	if prefix == "-" {
 		prefix = ""
 	}
-	return envconfig.Process(prefix, v)
+	return env.Parse(v, env.Options{Prefix: prefix})
 }
 
 func prefixFromProgramName(name string) string {
@@ -198,5 +214,5 @@ func prefixFromProgramName(name string) string {
 	if ext != "" {
 		name = strings.TrimSuffix(name, ext)
 	}
-	return strings.ReplaceAll(name, "-", "_")
+	return strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_"
 }

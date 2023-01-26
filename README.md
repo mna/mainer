@@ -24,9 +24,9 @@ testable:
 
 ```go
 type cmd struct {
-  Help    bool   `flag:"h,help" ignored:"true"`
-  Version bool   `flag:"v,version" ignored:"true"`
-  FooBar  string `flag:"foo-bar" envconfig:"foo_bar"`
+  Help    bool   `flag:"h,help"`
+  Version bool   `flag:"v,version"`
+  FooBar  string `flag:"foo-bar" env:"FOO_BAR"`
 }
 
 func (c *cmd) Validate() error {

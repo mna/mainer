@@ -8,37 +8,36 @@
 // implemented in a distinct package so the main package is minimal (just
 // the main function at the end):
 //
-//     type cmd struct {
-//       Help    bool   `flag:"h,help" ignored:"true"`
-//       Version bool   `flag:"v,version" ignored:"true"`
-//       FooBar  string `flag:"foo-bar" envconfig:"foo_bar"`
-//     }
+//	 type cmd struct {
+//	   Help    bool   `flag:"h,help"`
+//	   Version bool   `flag:"v,version"`
+//	   FooBar  string `flag:"foo-bar" env:"FOO_BAR"`
+//	 }
 //
-//     func (c *cmd) Validate() error {
-//       // the struct may implement a Validate method, and if it does the
-//       // Parser will call it once the flags are stored in the fields.
-//       return nil
-//     }
+//	 func (c *cmd) Validate() error {
+//	   // the struct may implement a Validate method, and if it does the
+//	   // Parser will call it once the flags are stored in the fields.
+//	   return nil
+//	 }
 //
-//     func (c *cmd) Main(args []string, stdio mainer.Stdio) mainer.ExitCode {
-//       // parse the flags, using env var <CMD>_FOO_BAR for the --foo-bar
-//       // flag if the flag is not set (where <CMD> defaults to the base name
-//       // of the executable, in uppercase and without extension).
-//    	 p := &mainer.Parser{EnvVars: true}
-//    	 if err := p.Parse(args, c); err != nil {
-//    	 	 fmt.Fprintln(stdio.Stderr, err)
-//    	 	 return mainer.InvalidArgs
-//    	 }
+//	 func (c *cmd) Main(args []string, stdio mainer.Stdio) mainer.ExitCode {
+//	   // parse the flags, using env var <CMD>_FOO_BAR for the --foo-bar
+//	   // flag if the flag is not set (where <CMD> defaults to the base name
+//	   // of the executable, in uppercase and without extension).
+//		 p := &mainer.Parser{EnvVars: true}
+//		 if err := p.Parse(args, c); err != nil {
+//		 	 fmt.Fprintln(stdio.Stderr, err)
+//		 	 return mainer.InvalidArgs
+//		 }
 //
-//       // execute the command...
-//       return mainer.Success
-//     }
+//	   // execute the command...
+//	   return mainer.Success
+//	 }
 //
-//     func main() {
-//       var c cmd
-//       os.Exit(int(c.Main(os.Args, mainer.CurrentStdio())))
-//     }
-//
+//	 func main() {
+//	   var c cmd
+//	   os.Exit(int(c.Main(os.Args, mainer.CurrentStdio())))
+//	 }
 package mainer
 
 import (
