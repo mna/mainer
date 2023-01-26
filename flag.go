@@ -3,7 +3,7 @@ package mainer
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -39,10 +39,10 @@ type Parser struct {
 
 // Parse parses args into v, using struct tags to detect flags.  The tag must
 // be named "flag" and multiple flags may be set for the same field using a
-// comma-separated list.  v must be a pointer to a struct and the flags must be
-// defined on fields with a type of string, int, bool or time.Duration.
-// If Parser.EnvVars is true, flag values are initialized from corresponding
-// environment variables first.
+// comma-separated list. v must be a pointer to a struct and the flags must be
+// defined on fields with a type of string, int/int64, uint/uint64, float64,
+// bool or time.Duration. If Parser.EnvVars is true, flag values are
+// initialized from corresponding environment variables first.
 //
 // After parsing, if v implements a Validate method that returns an error, it
 // is called and any non-nil error is returned as error.
@@ -84,12 +84,12 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 	// create a FlagSet that is silent and only returns any error
 	// it encounters.
 	fs := flag.NewFlagSet("", flag.ContinueOnError)
-	fs.SetOutput(ioutil.Discard)
+	fs.SetOutput(io.Discard)
 	fs.Usage = nil
 
 	// extract the flags from the struct
 	val := reflect.ValueOf(v).Elem()
-	str := reflect.TypeOf(v).Elem()
+	str := val.Type()
 	count := val.NumField()
 	for i := 0; i < count; i++ {
 		fld := val.Field(i)
@@ -97,20 +97,33 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 		names := strings.Split(typ.Tag.Get("flag"), ",")
 
 		for _, nm := range names {
+			nm = strings.TrimSpace(nm)
 			if nm == "" {
 				continue
 			}
-			switch fld.Kind() {
-			case reflect.Bool:
-				fs.BoolVar(fld.Addr().Interface().(*bool), nm, fld.Bool(), "")
-			case reflect.String:
-				fs.StringVar(fld.Addr().Interface().(*string), nm, fld.String(), "")
-			case reflect.Int:
-				fs.IntVar(fld.Addr().Interface().(*int), nm, int(fld.Int()), "")
+
+			// check for well-known types first, as their underlying type might be a
+			// basic kind (so it must be checked before the basic kinds are
+			// processed).
+			switch typ.Type {
+			case durationType:
+				fs.DurationVar(fld.Addr().Interface().(*time.Duration), nm, fld.Interface().(time.Duration), "")
 			default:
-				switch typ.Type {
-				case durationType:
-					fs.DurationVar(fld.Addr().Interface().(*time.Duration), nm, fld.Interface().(time.Duration), "")
+				switch fld.Kind() {
+				case reflect.Bool:
+					fs.BoolVar(fld.Addr().Interface().(*bool), nm, fld.Bool(), "")
+				case reflect.String:
+					fs.StringVar(fld.Addr().Interface().(*string), nm, fld.String(), "")
+				case reflect.Int:
+					fs.IntVar(fld.Addr().Interface().(*int), nm, int(fld.Int()), "")
+				case reflect.Int64:
+					fs.Int64Var(fld.Addr().Interface().(*int64), nm, fld.Int(), "")
+				case reflect.Uint:
+					fs.UintVar(fld.Addr().Interface().(*uint), nm, uint(fld.Uint()), "")
+				case reflect.Uint64:
+					fs.Uint64Var(fld.Addr().Interface().(*uint64), nm, fld.Uint(), "")
+				case reflect.Float64:
+					fs.Float64Var(fld.Addr().Interface().(*float64), nm, fld.Float(), "")
 				default:
 					panic(fmt.Sprintf("unsupported flag field kind: %s (%s: %s)", fld.Kind(), typ.Name, typ.Type))
 				}

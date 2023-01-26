@@ -12,12 +12,19 @@ import (
 )
 
 type F struct {
-	S     string        `flag:"s,string,long-string"`
-	I     int           `flag:"i,int"`
-	B     bool          `flag:"b"`
-	H     bool          `flag:"h,help"`
-	T     time.Duration `flag:"t"`
-	N     int
+	S string        `flag:"s,string,long-string"`
+	I int           `flag:"i,int"`
+	B bool          `flag:"b"`
+	H bool          `flag:"h,help"`
+	T time.Duration `flag:"t"`
+	N int
+
+	I64 int64   `flag:"i64"`
+	U64 uint64  `flag:"u64"`
+	F64 float64 `flag:"f64"`
+
+	Spaced string `flag:"sp , spaced "`
+
 	args  []string
 	flags map[string]bool
 }
@@ -131,6 +138,34 @@ func TestParseFlags(t *testing.T) {
 				args: []string{"arg1", "-i", "2"},
 			},
 		},
+		{
+			args: []string{"-sp", "hello"},
+			want: &F{
+				Spaced: "hello",
+				flags:  map[string]bool{"sp": true},
+			},
+		},
+		{
+			args: []string{"--spaced", "hello"},
+			want: &F{
+				Spaced: "hello",
+				flags:  map[string]bool{"spaced": true},
+			},
+		},
+		{
+			args: []string{"--i64", "-123", "-u64", "456", "-f64", "3.1415"},
+			want: &F{
+				I64:   -123,
+				U64:   456,
+				F64:   3.1415,
+				flags: map[string]bool{"i64": true, "u64": true, "f64": true},
+			},
+		},
+		{
+			args: []string{"-u64", "-1"},
+			want: &F{},
+			err:  `invalid value "-1" for flag -u64`,
+		},
 	}
 
 	var p Parser
@@ -194,7 +229,35 @@ func TestParseArgsError(t *testing.T) {
 	f := F{}
 	err := p.Parse([]string{"", "-zz"}, &f)
 	c.Assert(err, qt.IsNotNil)
-	c.Assert(err.Error(), qt.Contains, "-zz")
+	c.Assert(err.Error(), qt.Contains, "not defined: -zz")
+}
+
+func TestParseDuplicateFlagName(t *testing.T) {
+	c := qt.New(t)
+
+	type F struct {
+		X bool `flag:"x"`
+		Y int  `flag:"x"`
+	}
+	var p Parser
+	f := F{}
+	c.Assert(func() {
+		_ = p.Parse([]string{"-x", "1"}, &f)
+	}, qt.PanicMatches, `flag redefined: x`)
+}
+
+func TestParseDuplicateAltFlagName(t *testing.T) {
+	c := qt.New(t)
+
+	type F struct {
+		X bool `flag:"x,long-x"`
+		Y bool `flag:"y,long-x"`
+	}
+	var p Parser
+	f := F{}
+	c.Assert(func() {
+		_ = p.Parse([]string{"-x", "1"}, &f)
+	}, qt.PanicMatches, `flag redefined: long-x`)
 }
 
 func TestParseNotStructPointer(t *testing.T) {
