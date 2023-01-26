@@ -519,3 +519,46 @@ func TestParseEnvVars(t *testing.T) {
 		})
 	}
 }
+
+type reverseVal string
+
+func (r *reverseVal) UnmarshalText(t []byte) error {
+	for i := len(t)/2 - 1; i >= 0; i-- {
+		opp := len(t) - 1 - i
+		t[i], t[opp] = t[opp], t[i]
+	}
+	*r = reverseVal(t)
+	return nil
+}
+
+func (r reverseVal) MarshalText() ([]byte, error) {
+	return []byte(r), nil
+}
+
+func TestTextUnmarshalerFlagValue(t *testing.T) {
+	c := qt.New(t)
+
+	type F struct {
+		V reverseVal `flag:"reverse"`
+	}
+	var (
+		f F
+		p Parser
+	)
+	err := p.Parse([]string{"", "-reverse", "hello"}, &f)
+	c.Assert(err, qt.IsNil)
+	c.Assert(string(f.V), qt.Equals, "olleh")
+}
+
+func TestTextUnmarshalerFlagPtr(t *testing.T) {
+	c := qt.New(t)
+
+	type F struct {
+		V *reverseVal `flag:"reverse"`
+	}
+	var p Parser
+	f := F{V: new(reverseVal)}
+	err := p.Parse([]string{"", "-reverse", "hello"}, &f)
+	c.Assert(err, qt.IsNil)
+	c.Assert(string(*f.V), qt.Equals, "olleh")
+}

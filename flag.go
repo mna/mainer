@@ -1,6 +1,7 @@
 package mainer
 
 import (
+	"encoding"
 	"errors"
 	"flag"
 	"fmt"
@@ -41,10 +42,16 @@ type Parser struct {
 // Parse parses args into v, using struct tags to detect flags. Note that the
 // args slice should start with the program name (as is the case for `os.Args`,
 // which is typically used). The tag must be named "flag" and multiple flags
-// may be set for the same field using a comma-separated list. v must be a
-// pointer to a struct and the flags must be defined on exported fields with a
-// type of string, int/int64, uint/uint64, float64, bool or time.Duration. If
-// Parser.EnvVars is true, flag values are initialized from corresponding
+// may be set for the same field using a comma-separated list.
+//
+// v must be a pointer to a struct and the flags must be defined on exported
+// fields with a type of string, int/int64, uint/uint64, float64, bool or
+// time.Duration or with a type that directly implements
+// encoding.TextMarshaler/TextUnmarshaler (both interfaces must be satisfied),
+// or on a type T that implements those interfaces on *T (a pointer to the
+// type).
+//
+// If Parser.EnvVars is true, flag values are initialized from corresponding
 // environment variables first, as defined by the github.com/caarlos0/env/v6
 // package (which is used for environment parsing).
 //
@@ -76,7 +83,6 @@ func (p *Parser) Parse(args []string, v interface{}) error {
 		}
 	}
 
-	// TODO: support encoding.TextUnmarshaler
 	// TODO: support []string (and other types?) that collects all values set via multiple flags
 	// TODO: support []string (and other types?) that collects all values via comma-separated list
 
@@ -122,6 +128,7 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 	str := val.Type()
 	count := val.NumField()
 	canonLookup := make(map[string]string, count) // key is flag name, value is canonical name
+
 	for i := 0; i < count; i++ {
 		fld := val.Field(i)
 		typ := str.Field(i)
@@ -145,6 +152,24 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 			case durationType:
 				fs.DurationVar(fld.Addr().Interface().(*time.Duration), nm, fld.Interface().(time.Duration), "")
 			default:
+				// for flag.TextVar to be supported, the type must implement both
+				// TextUnmarshaler and TextMarshaler. As a convenience, if the type
+				// does not implement TextUnmarshaler but a pointer to the type does,
+				// support it.
+				tuv, okuv := fld.Interface().(encoding.TextUnmarshaler)
+				tmv, okmv := fld.Interface().(encoding.TextMarshaler)
+				tup, okup := fld.Addr().Interface().(encoding.TextUnmarshaler)
+				tmp, okmp := fld.Addr().Interface().(encoding.TextMarshaler)
+				if okuv && okmv {
+					// the field's value itself implements both
+					fs.TextVar(tuv, nm, tmv, "")
+					continue
+				} else if (okuv || okup) && (okmv || okmp) {
+					// the pointer implements the missing one, so use a pointer for the flag
+					fs.TextVar(tup, nm, tmp, "")
+					continue
+				}
+
 				switch fld.Kind() {
 				case reflect.Bool:
 					fs.BoolVar(fld.Addr().Interface().(*bool), nm, fld.Bool(), "")
