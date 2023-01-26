@@ -1,6 +1,7 @@
 package mainer
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -37,14 +38,15 @@ type Parser struct {
 	EnvPrefix string
 }
 
-// Parse parses args into v, using struct tags to detect flags.  The tag must
-// be named "flag" and multiple flags may be set for the same field using a
-// comma-separated list. v must be a pointer to a struct and the flags must be
-// defined on exported fields with a type of string, int/int64, uint/uint64,
-// float64, bool or time.Duration. If Parser.EnvVars is true, flag values are
-// initialized from corresponding environment variables first, as defined by
-// the github.com/caarlos0/env/v6 package (which is used for environment
-// parsing).
+// Parse parses args into v, using struct tags to detect flags. Note that the
+// args slice should start with the program name (as is the case for `os.Args`,
+// which is typically used). The tag must be named "flag" and multiple flags
+// may be set for the same field using a comma-separated list. v must be a
+// pointer to a struct and the flags must be defined on exported fields with a
+// type of string, int/int64, uint/uint64, float64, bool or time.Duration. If
+// Parser.EnvVars is true, flag values are initialized from corresponding
+// environment variables first, as defined by the github.com/caarlos0/env/v6
+// package (which is used for environment parsing).
 //
 // Flags and arguments can be interspersed, but flag parsing stops if it
 // encounters the "--" value; all subsequent values are treated as arguments.
@@ -56,15 +58,14 @@ type Parser struct {
 // arguments (a slice of strings) that respects the provided order.
 //
 // If v has a SetFlags(map[string]bool) method, it is called with the set of
-// flags that were explicitly set by args (a map[string]bool). Note that if
-// a field can be set with multiple flags, the actual flag used on the command
-// line will be set as key.
+// flags that were explicitly set by args (a map[string]bool). Note that if a
+// field can be set with multiple flags, the key is canonicalized to the first
+// flag defined on the field.
 //
 // If v has a SetFlagsCount(map[string]int) method, it is called with the map
 // of flags that were explicitly set by args, and the associated value is the
-// number of times the flag was provided. Unlike SetFlags, if a field can be
-// set with multiple flags, the key is canonicalized to the first flag defined
-// on the field.
+// number of times the flag was provided. As for SetFlags, the key is
+// canonicalized to the first flag defined on the field.
 //
 // It panics if v is not a pointer to a struct or if a flag is defined with an
 // unsupported type.
@@ -76,7 +77,6 @@ func (p *Parser) Parse(args []string, v interface{}) error {
 	}
 
 	// TODO: support encoding.TextUnmarshaler
-	// TODO: support SetFlagsCount(map[string]int) method, with flag name canonicalized
 	// TODO: support []string (and other types?) that collects all values set via multiple flags
 	// TODO: support []string (and other types?) that collects all values via comma-separated list
 
@@ -91,6 +91,20 @@ func (p *Parser) Parse(args []string, v interface{}) error {
 }
 
 var durationType = reflect.TypeOf(time.Duration(0))
+
+type valueSetter struct {
+	flag.Value
+	setter func(string) error
+	isBool bool
+}
+
+func (v valueSetter) Set(s string) error {
+	return v.setter(s)
+}
+
+func (v valueSetter) IsBoolFlag() bool {
+	return v.isBool
+}
 
 func (p *Parser) parseFlags(args []string, v interface{}) error {
 	if len(args) == 0 {
@@ -107,16 +121,22 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 	val := reflect.ValueOf(v).Elem()
 	str := val.Type()
 	count := val.NumField()
+	canonLookup := make(map[string]string, count) // key is flag name, value is canonical name
 	for i := 0; i < count; i++ {
 		fld := val.Field(i)
 		typ := str.Field(i)
 		names := strings.Split(typ.Tag.Get("flag"), ",")
 
+		var canonFlag string
 		for _, nm := range names {
 			nm = strings.TrimSpace(nm)
 			if nm == "" {
 				continue
 			}
+			if canonFlag == "" {
+				canonFlag = nm
+			}
+			canonLookup[nm] = canonFlag
 
 			// check for well-known types first, as their underlying type might be a
 			// basic kind (so it must be checked before the basic kinds are
@@ -147,13 +167,39 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 		}
 	}
 
-	var (
-		nonFlags []string
-		flagSet  map[string]bool
-	)
-	args = args[1:]
+	var flagsCount map[string]int
+	if _, ok := v.(interface{ SetFlagsCount(map[string]int) }); ok {
+		// v implements SetFlagsCount, so wrap each flag in a func that will count
+		// and report the number of times it was set (under the canonical - first
+		// defined - flag name).
+		flagsCount = make(map[string]int)
+
+		fs.VisitAll(func(fl *flag.Flag) {
+			inner := fl.Value
+			setter := valueSetter{
+				Value: inner,
+				setter: func(s string) error {
+					flagsCount[canonLookup[fl.Name]]++
+					return inner.Set(s)
+				},
+			}
+			if bo, ok := inner.(interface{ IsBoolFlag() bool }); ok && bo.IsBoolFlag() {
+				setter.isBool = true
+			}
+			fl.Value = setter
+		})
+	}
+
+	var nonFlags []string
+	args = args[1:] // skip the program name
 	for len(args) > 0 {
 		if err := fs.Parse(args); err != nil {
+			if err == flag.ErrHelp {
+				if fs.Lookup("help") == nil && sliceContains(args, "-help") {
+					return errors.New("flag provided but not defined: -help")
+				}
+				return errors.New("flag provided but not defined: -h")
+			}
 			return err
 		}
 
@@ -175,22 +221,29 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 			}
 			nonFlags = append(nonFlags, nf)
 		}
-
-		if _, ok := v.(interface{ SetFlags(map[string]bool) }); ok {
-			fs.Visit(func(fl *flag.Flag) {
-				if flagSet == nil {
-					flagSet = make(map[string]bool)
-				}
-				flagSet[fl.Name] = true
-			})
-		}
 	}
 
 	if sa, ok := v.(interface{ SetArgs([]string) }); ok {
 		sa.SetArgs(nonFlags)
 	}
+
 	if sf, ok := v.(interface{ SetFlags(map[string]bool) }); ok {
+		var flagSet map[string]bool
+		fs.Visit(func(fl *flag.Flag) {
+			if flagSet == nil {
+				flagSet = make(map[string]bool)
+			}
+			flagSet[canonLookup[fl.Name]] = true
+		})
 		sf.SetFlags(flagSet)
+	}
+
+	if sfc, ok := v.(interface{ SetFlagsCount(map[string]int) }); ok {
+		if len(flagsCount) == 0 {
+			sfc.SetFlagsCount(nil)
+		} else {
+			sfc.SetFlagsCount(flagsCount)
+		}
 	}
 
 	return nil
@@ -215,4 +268,13 @@ func prefixFromProgramName(name string) string {
 		name = strings.TrimSuffix(name, ext)
 	}
 	return strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_"
+}
+
+func sliceContains(sl []string, s string) bool {
+	for _, ss := range sl {
+		if ss == s {
+			return true
+		}
+	}
+	return false
 }

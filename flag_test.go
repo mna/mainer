@@ -23,7 +23,7 @@ type F struct {
 	U64 uint64  `flag:"u64"`
 	F64 float64 `flag:"f64"`
 
-	Spaced string `flag:"sp , spaced "`
+	Spaced string `flag:", sp , spaced "`
 
 	args  []string
 	flags map[string]bool
@@ -43,7 +43,7 @@ func TestParseFlags(t *testing.T) {
 	c := qt.New(t)
 
 	cases := []struct {
-		args []string
+		args []string // args only, the 0-index is automatically added in test
 		want *F
 		err  string
 	}{
@@ -67,21 +67,21 @@ func TestParseFlags(t *testing.T) {
 			args: []string{"-i", "10", "--int", "20"},
 			want: &F{
 				I:     20,
-				flags: map[string]bool{"i": true, "int": true},
+				flags: map[string]bool{"i": true},
 			},
 		},
 		{
-			args: []string{"-i", "10", "--int", "20"},
+			args: []string{"--int", "20", "-i", "10"},
 			want: &F{
-				I:     20,
-				flags: map[string]bool{"i": true, "int": true},
+				I:     10,
+				flags: map[string]bool{"i": true},
 			},
 		},
 		{
 			args: []string{"-s", "a", "--string", "b", "-long-string", "c"},
 			want: &F{
 				S:     "c",
-				flags: map[string]bool{"s": true, "string": true, "long-string": true},
+				flags: map[string]bool{"s": true},
 			},
 		},
 		{
@@ -98,7 +98,7 @@ func TestParseFlags(t *testing.T) {
 				I:     1,
 				S:     "a",
 				args:  []string{"arg1", "arg2"},
-				flags: map[string]bool{"b": true, "int": true, "string": true},
+				flags: map[string]bool{"b": true, "i": true, "s": true},
 			},
 		},
 		{
@@ -149,7 +149,7 @@ func TestParseFlags(t *testing.T) {
 			args: []string{"--spaced", "hello"},
 			want: &F{
 				Spaced: "hello",
-				flags:  map[string]bool{"spaced": true},
+				flags:  map[string]bool{"sp": true},
 			},
 		},
 		{
@@ -185,6 +185,114 @@ func TestParseFlags(t *testing.T) {
 			c.Assert(&f, equalsF, tc.want)
 		})
 	}
+}
+
+type Fc struct {
+	S string `flag:"string,s"`
+	I int    `flag:"int,i"`
+	B bool   `flag:"b"`
+
+	counts map[string]int
+}
+
+var equalsFc = qt.CmpEquals(cmp.AllowUnexported(Fc{}))
+
+func (f *Fc) SetFlagsCount(flags map[string]int) {
+	f.counts = flags
+}
+
+func TestParseFlagsCount(t *testing.T) {
+	c := qt.New(t)
+
+	cases := []struct {
+		args []string // args only, the 0-index is automatically added in test
+		want *Fc
+		err  string
+	}{
+		{
+			want: &Fc{},
+		},
+		{
+			args: []string{"toto"},
+			want: &Fc{},
+		},
+		{
+			args: []string{"-h"},
+			want: &Fc{},
+			err:  "not defined: -h",
+		},
+		{
+			args: []string{"-help"},
+			want: &Fc{},
+			err:  "not defined: -help",
+		},
+		{
+			args: []string{"-s", "a"},
+			want: &Fc{
+				S:      "a",
+				counts: map[string]int{"string": 1},
+			},
+		},
+		{
+			args: []string{"-b", "-b", "-b"},
+			want: &Fc{
+				B:      true,
+				counts: map[string]int{"b": 3},
+			},
+		},
+		{
+			args: []string{"-b", "-i", "1", "--int", "2", "a", "-s", "x", "b", "-i", "3", "c", "--string", "y"},
+			want: &Fc{
+				B:      true,
+				I:      3,
+				S:      "y",
+				counts: map[string]int{"b": 1, "int": 3, "string": 2},
+			},
+		},
+	}
+
+	var p Parser
+	for _, tc := range cases {
+		c.Run(strings.Join(tc.args, " "), func(c *qt.C) {
+			var fc Fc
+			args := append([]string{""}, tc.args...)
+			err := p.Parse(args, &fc)
+
+			if tc.err != "" {
+				c.Assert(err, qt.IsNotNil)
+				c.Assert(err.Error(), qt.Contains, tc.err)
+				return
+			}
+
+			c.Assert(err, qt.IsNil)
+			c.Assert(&fc, equalsFc, tc.want)
+		})
+	}
+}
+
+func TestParseDefaultsSet(t *testing.T) {
+	c := qt.New(t)
+
+	f := F{
+		I:      1,
+		I64:    2,
+		U64:    3,
+		F64:    4.0,
+		B:      true,
+		S:      "s",
+		Spaced: "sp",
+		N:      5,
+		T:      time.Hour,
+	}
+
+	f2 := f
+	f2.I = 1000
+	f2.flags = map[string]bool{"i": true}
+
+	var p Parser
+	err := p.Parse([]string{"", "-i", "1000"}, &f)
+	c.Assert(err, qt.IsNil)
+	c.Assert(f, equalsF, f2)
 }
 
 func TestParseNoFlag(t *testing.T) {
@@ -288,10 +396,10 @@ func TestParseUnsupportedFlagType(t *testing.T) {
 }
 
 type E struct {
-	Addr    string `flag:"addr"`
-	DB      string `flag:"db"`
-	Help    bool   `flag:"h,help" ignored:"true"`
-	Version bool   `flag:"v,version" ignored:"true"`
+	Addr    string `flag:"addr" env:"ADDR"`
+	DB      string `flag:"db" env:"DB"`
+	Help    bool   `flag:"h,help"`
+	Version bool   `flag:"v,version"`
 }
 
 func (e *E) Validate() error {
@@ -387,7 +495,7 @@ func TestParseEnvVars(t *testing.T) {
 					c.Assert(ix >= 0, qt.IsTrue, qt.Commentf("%s: missing colon", pair))
 
 					key, val := pair[:ix], pair[ix+1:]
-					key = strings.ToUpper(prefixFromProgramName(progName)) + "_" + key
+					key = strings.ToUpper(prefixFromProgramName(progName)) + key
 					c.Setenv(key, val)
 				}
 			}

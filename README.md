@@ -55,6 +55,14 @@ func main() {
 }
 ```
 
+## Breaking changes
+
+### v0.3
+
+* Use `github.com/caarlos0/env/v6` as environment-variable parsing package instead of `github.com/kelseyhightower/envconfig`.
+* Flag names are trimmed of any leading and trailing spaces (e.g. `flag:" h , hello "` now define the flags "h" and "hello").
+* `SetFlags` now reports set flags using a canonical flag name (the first flag defined on the field). Which of the various flag aliases was used should not matter (if it does, define distinct fields instead).
+
 ## License
 
 The [BSD 3-Clause license](http://opensource.org/licenses/BSD-3-Clause).
