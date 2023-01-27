@@ -45,11 +45,19 @@ type Parser struct {
 // may be set for the same field using a comma-separated list.
 //
 // v must be a pointer to a struct and the flags must be defined on exported
-// fields with a type of string, int/int64, uint/uint64, float64, bool or
-// time.Duration or with a type that directly implements
-// encoding.TextMarshaler/TextUnmarshaler (both interfaces must be satisfied),
-// or on a type T that implements those interfaces on *T (a pointer to the
-// type).
+// fields with one of those types:
+//   - string
+//   - int/int64
+//   - uint/uint64
+//   - float64
+//   - bool
+//   - time.Duration
+//   - a type that directly implements encoding.TextMarshaler/TextUnmarshaler
+//     (both interfaces must be satisfied), or a type T that implements those
+//     interfaces on *T (a pointer to the type)
+//   - a slice of any of those types
+//
+// For slices, a new value is appended each time the flag is encountered.
 //
 // If Parser.EnvVars is true, flag values are initialized from corresponding
 // environment variables first, as defined by the github.com/caarlos0/env/v6
@@ -146,6 +154,7 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 		fld := val.Field(i)
 		typ := strct.Field(i)
 		names := strings.Split(typ.Tag.Get("flag"), ",")
+		sliceSep, sliceSepSet := typ.Tag.Lookup("flagSeparator")
 
 		var canonFlag string
 		for _, nm := range names {
@@ -164,6 +173,9 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 			// regardless of whether it is a slice or not (it's up to the unmarshaler
 			// to handle the values).
 			if t, ok := textMarshalerUnmarshaler(fld); ok {
+				if sliceSepSet {
+					panic(fmt.Sprintf("ineffective flagSeparator attribute set on field %s", typ.Name))
+				}
 				fs.TextVar(t, nm, t, "")
 				continue
 			}
@@ -172,6 +184,7 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 				elemTyp := typ.Type.Elem()
 				ptr := createSliceElem(elemTyp)
 
+				_ = sliceSep
 				if sliceFs == nil {
 					sliceFs = flag.NewFlagSet("", flag.ContinueOnError)
 				}
@@ -186,6 +199,9 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 				continue
 			}
 
+			if sliceSepSet {
+				panic(fmt.Sprintf("ineffective flagSeparator attribute set on field %s", typ.Name))
+			}
 			if !addToFlagSet(fs, nm, fld, false) {
 				panic(fmt.Sprintf("unsupported flag field kind: %s (%s: %s)", fld.Kind(), typ.Name, typ.Type))
 			}

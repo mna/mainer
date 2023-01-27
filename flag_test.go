@@ -804,3 +804,33 @@ func TestSliceUnmarshalerMulti(t *testing.T) {
 	c.Assert(err, qt.IsNil)
 	c.Assert(string(f.S), qt.Equals, "hello world!")
 }
+
+func TestIneffectiveSliceSepMarshaler(t *testing.T) {
+	c := qt.New(t)
+
+	type F struct {
+		S concat `flag:"s" flagSeparator:","`
+	}
+	var (
+		f F
+		p Parser
+	)
+	c.Assert(func() {
+		_ = p.Parse([]string{"", "-s", "whatever"}, &f)
+	}, qt.PanicMatches, `ineffective flagSeparator attribute set on field S`)
+}
+
+func TestIneffectiveSliceSep(t *testing.T) {
+	c := qt.New(t)
+
+	type F struct {
+		I int `flag:"i" flagSeparator:","`
+	}
+	var (
+		f F
+		p Parser
+	)
+	c.Assert(func() {
+		_ = p.Parse([]string{"", "-i", "123"}, &f)
+	}, qt.PanicMatches, `ineffective flagSeparator attribute set on field I`)
+}
