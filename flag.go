@@ -100,6 +100,11 @@ func (p *Parser) Parse(args []string, v interface{}) error {
 
 var durationType = reflect.TypeOf(time.Duration(0))
 
+type nopValue struct{}
+
+func (nopValue) Set(s string) error { return nil }
+func (nopValue) String() string     { return "" }
+
 // valueSetter wraps a flag's Value with one that calls a setter func when the
 // flag is set. Other flag.Value methods are the same as the wrapped Value.
 type valueSetter struct {
@@ -176,30 +181,8 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 				if !addToFlagSet(sliceFs, nm, ptr.Elem(), true) {
 					panic(fmt.Sprintf("unsupported flag field kind: %s (%s: []%s)", elemTyp.Kind(), typ.Name, elemTyp))
 				}
-
-				// all flags' values are getters too, except for func which isn't used by addToFlagSet.
-				sliceElemVal := sliceFs.Lookup(nm).Value.(flag.Getter)
-				fs.Func(nm, "", func(s string) error {
-					if err := sliceElemVal.Set(s); err != nil {
-						return err
-					}
-
-					newVal := reflect.ValueOf(sliceElemVal.Get())
-					if newVal.Kind() == reflect.Pointer {
-						if elemTyp.Kind() != reflect.Pointer {
-							newVal = newVal.Elem()
-						} else {
-							// must clone the value, not reuse the same destination as all
-							// values in the slice would be the same pointer.
-							newPtr := createSliceElem(elemTyp)
-							newPtr.Elem().Set(newVal.Elem())
-							newVal = newPtr
-						}
-					}
-
-					fld.Set(reflect.Append(fld, newVal))
-					return nil
-				})
+				elemFlag := sliceFs.Lookup(nm)
+				makeSliceFlag(fs, elemFlag, elemTyp, fld)
 				continue
 			}
 
@@ -322,6 +305,39 @@ func createSliceElem(typ reflect.Type) reflect.Value {
 		typ = typ.Elem()
 	}
 	return reflect.New(typ)
+}
+
+func makeSliceFlag(fs *flag.FlagSet, elemFlag *flag.Flag, elemTyp reflect.Type, fldVal reflect.Value) {
+	// all flags' values are getters too, except for func which isn't used by addToFlagSet.
+	valGet := elemFlag.Value.(flag.Getter)
+
+	flagVal := valueSetter{
+		Value:  nopValue{},
+		isBool: elemTyp.Kind() == reflect.Bool,
+		setter: func(s string) error {
+			if err := valGet.Set(s); err != nil {
+				return err
+			}
+
+			newVal := reflect.ValueOf(valGet.Get())
+			if newVal.Kind() == reflect.Pointer {
+				if elemTyp.Kind() != reflect.Pointer {
+					newVal = newVal.Elem()
+				} else {
+					// must clone the value, not reuse the same destination as all
+					// values in the slice would be the same pointer.
+					newPtr := createSliceElem(elemTyp)
+					newPtr.Elem().Set(newVal.Elem())
+					newVal = newPtr
+				}
+			}
+
+			fldVal.Set(reflect.Append(fldVal, newVal))
+			return nil
+		},
+	}
+
+	fs.Var(flagVal, elemFlag.Name, "")
 }
 
 func setupFlagsCount(fs *flag.FlagSet, canonLookup map[string]string) map[string]int {

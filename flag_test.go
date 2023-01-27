@@ -166,6 +166,20 @@ func TestParseFlags(t *testing.T) {
 			want: &F{},
 			err:  `invalid value "-1" for flag -u64`,
 		},
+		{
+			args: []string{"-b=false"},
+			want: &F{
+				B:     false,
+				flags: map[string]bool{"b": true},
+			},
+		},
+		{
+			args: []string{"-b=true"},
+			want: &F{
+				B:     true,
+				flags: map[string]bool{"b": true},
+			},
+		},
 	}
 
 	var p Parser
@@ -520,7 +534,10 @@ func TestParseEnvVars(t *testing.T) {
 	}
 }
 
-type reverseVal string
+type (
+	reverseVal string // *T implements Unmarshal, T implements Marshal
+	upcaseVal  string // *T implements both
+)
 
 func (r *reverseVal) UnmarshalText(t []byte) error {
 	for i := len(t)/2 - 1; i >= 0; i-- {
@@ -538,6 +555,20 @@ func (r reverseVal) MarshalText() ([]byte, error) {
 func ptrRev(s string) *reverseVal {
 	r := reverseVal(s)
 	return &r
+}
+
+func (u *upcaseVal) UnmarshalText(t []byte) error {
+	*u = upcaseVal(strings.ToUpper(string(t)))
+	return nil
+}
+
+func (u *upcaseVal) MarshalText() ([]byte, error) {
+	return []byte(*u), nil
+}
+
+func ptrUpc(s string) *upcaseVal {
+	u := upcaseVal(s)
+	return &u
 }
 
 func TestTextUnmarshalerFlagValue(t *testing.T) {
@@ -569,14 +600,16 @@ func TestTextUnmarshalerFlagPtr(t *testing.T) {
 }
 
 type Fs struct {
-	Ss  []string        `flag:"s,string"`
-	Is  []int           `flag:"i"`
-	Us  []uint64        `flag:"u"`
-	Bs  []bool          `flag:"b"`
-	Fs  []float64       `flag:"f"`
-	Ts  []time.Duration `flag:"t"`
-	Rs  []reverseVal    `flag:"rev"`
-	Prs []*reverseVal   `flag:"prev"`
+	Ss   []string        `flag:"s,string"`
+	Is   []int           `flag:"i"`
+	Us   []uint64        `flag:"u"`
+	Bs   []bool          `flag:"b"`
+	Fs   []float64       `flag:"f"`
+	Ts   []time.Duration `flag:"t"`
+	Rs   []reverseVal    `flag:"rev"`
+	Prs  []*reverseVal   `flag:"prev"`
+	Uvs  []upcaseVal     `flag:"up"`
+	Puvs []*upcaseVal    `flag:"pup"`
 
 	counts map[string]int
 }
@@ -625,20 +658,31 @@ func TestParseSliceFlags(t *testing.T) {
 			want: &Fs{},
 			err:  `invalid value "x" for flag -u`,
 		},
-		//{
-		//	args: []string{"-u", "1", "-u", "2", "-b", "-f", "3.1415", "-b"},
-		//	want: &Fs{
-		//		Us:     []uint64{1, 2},
-		//		Bs:     []bool{true, true},
-		//		Fs:     []float64{3.1415},
-		//		counts: map[string]int{"b": 2, "f": 1, "u": 2},
-		//	},
-		//},
+		{
+			args: []string{"-u", "1", "-u", "2", "-b", "-f", "3.1415", "-b"},
+			want: &Fs{
+				Us:     []uint64{1, 2},
+				Bs:     []bool{true, true},
+				Fs:     []float64{3.1415},
+				counts: map[string]int{"b": 2, "f": 1, "u": 2},
+			},
+		},
 		{
 			args: []string{"-t", "1s", "-t", "24h"},
 			want: &Fs{
 				Ts:     []time.Duration{time.Second, 24 * time.Hour},
 				counts: map[string]int{"t": 2},
+			},
+		},
+		{
+			args: []string{"-t", "nope"},
+			err:  `invalid value "nope" for flag -t: parse error`,
+		},
+		{
+			args: []string{"-b=true", "-b=false", "-b"},
+			want: &Fs{
+				Bs:     []bool{true, false, true},
+				counts: map[string]int{"b": 3},
 			},
 		},
 		{
@@ -654,6 +698,24 @@ func TestParseSliceFlags(t *testing.T) {
 				Prs:    []*reverseVal{ptrRev("cba"), ptrRev("fed")},
 				counts: map[string]int{"prev": 2},
 			},
+		},
+		{
+			args: []string{"-up", "abc", "-up", "def"},
+			want: &Fs{
+				Uvs:    []upcaseVal{"ABC", "DEF"},
+				counts: map[string]int{"up": 2},
+			},
+		},
+		{
+			args: []string{"-pup", "abc", "-pup", "def"},
+			want: &Fs{
+				Puvs:   []*upcaseVal{ptrUpc("ABC"), ptrUpc("DEF")},
+				counts: map[string]int{"pup": 2},
+			},
+		},
+		{
+			args: []string{"-b=toto"},
+			err:  `invalid boolean value "toto" for -b: parse error`,
 		},
 	}
 
@@ -674,4 +736,71 @@ func TestParseSliceFlags(t *testing.T) {
 			c.Assert(&fs, equalsFs, tc.want)
 		})
 	}
+}
+
+func TestSliceInvalidType(t *testing.T) {
+	c := qt.New(t)
+
+	type F struct {
+		S []byte `flag:"nope"`
+	}
+	var (
+		f F
+		p Parser
+	)
+	c.Assert(func() {
+		_ = p.Parse([]string{"", "-nope", "whatever"}, &f)
+	}, qt.PanicMatches, `unsupported flag field kind: uint8 \(S: \[\]uint8\)`)
+}
+
+type fromString []byte
+
+func (f *fromString) UnmarshalText(b []byte) error {
+	*f = b
+	return nil
+}
+
+func (f fromString) MarshalText() ([]byte, error) {
+	return []byte(f), nil
+}
+
+func TestSliceImplementsUnmarshaler(t *testing.T) {
+	c := qt.New(t)
+
+	type F struct {
+		S fromString `flag:"s"`
+	}
+	var (
+		f F
+		p Parser
+	)
+	err := p.Parse([]string{"", "-s", "hello", "-s", "world!"}, &f)
+	c.Assert(err, qt.IsNil)
+	c.Assert(string(f.S), qt.Equals, "world!")
+}
+
+type concat string
+
+func (c *concat) UnmarshalText(b []byte) error {
+	*c = concat(string(*c) + string(b))
+	return nil
+}
+
+func (c concat) MarshalText() ([]byte, error) {
+	return []byte(c), nil
+}
+
+func TestSliceUnmarshalerMulti(t *testing.T) {
+	c := qt.New(t)
+
+	type F struct {
+		S concat `flag:"s,string"`
+	}
+	var (
+		f F
+		p Parser
+	)
+	err := p.Parse([]string{"", "-s", "hello", "-string", " ", "-s", "world!"}, &f)
+	c.Assert(err, qt.IsNil)
+	c.Assert(string(f.S), qt.Equals, "hello world!")
 }
