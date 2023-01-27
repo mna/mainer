@@ -57,7 +57,16 @@ type Parser struct {
 //     interfaces on *T (a pointer to the type)
 //   - a slice of any of those types
 //
-// For slices, a new value is appended each time the flag is encountered.
+// For slices, by default a new value is appended each time the flag is
+// encountered. This behaviour can be altered by adding a "flagSeparator"
+// struct tag to the field, in addition to the "flag" one, e.g.:
+//
+//	type S struct {
+//	  Name []string `flag:"name" flagSeparator:","`
+//	}
+//
+// This causes the field to be filled with a single flag value being set, and
+// that value is split on the provided separator.
 //
 // If Parser.EnvVars is true, flag values are initialized from corresponding
 // environment variables first, as defined by the github.com/caarlos0/env/v6
@@ -93,8 +102,6 @@ func (p *Parser) Parse(args []string, v interface{}) error {
 			return err
 		}
 	}
-
-	// TODO: support []string (and other types?) that collects all values via comma-separated list
 
 	if err := p.parseFlags(args, v); err != nil {
 		return err
@@ -166,9 +173,6 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 			}
 			canonLookup[nm] = canonFlag
 
-			// TODO: if flagSeparator is set and it's not a slice (or it implements
-			// TextUnmarshaler), panic, it is a developer error.
-
 			// if the field implements text (un)marshaler, then we're done,
 			// regardless of whether it is a slice or not (it's up to the unmarshaler
 			// to handle the values).
@@ -184,7 +188,6 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 				elemTyp := typ.Type.Elem()
 				ptr := createSliceElem(elemTyp)
 
-				_ = sliceSep
 				if sliceFs == nil {
 					sliceFs = flag.NewFlagSet("", flag.ContinueOnError)
 				}
@@ -195,7 +198,7 @@ func (p *Parser) parseFlags(args []string, v interface{}) error {
 					panic(fmt.Sprintf("unsupported flag field kind: %s (%s: []%s)", elemTyp.Kind(), typ.Name, elemTyp))
 				}
 				elemFlag := sliceFs.Lookup(nm)
-				makeSliceFlag(fs, elemFlag, elemTyp, fld)
+				makeSliceFlag(fs, elemFlag, elemTyp, fld, sliceSep)
 				continue
 			}
 
@@ -323,14 +326,13 @@ func createSliceElem(typ reflect.Type) reflect.Value {
 	return reflect.New(typ)
 }
 
-func makeSliceFlag(fs *flag.FlagSet, elemFlag *flag.Flag, elemTyp reflect.Type, fldVal reflect.Value) {
+func makeSliceFlag(fs *flag.FlagSet, elemFlag *flag.Flag, elemTyp reflect.Type, fldVal reflect.Value, sep string) {
 	// all flags' values are getters too, except for func which isn't used by addToFlagSet.
 	valGet := elemFlag.Value.(flag.Getter)
 
-	flagVal := valueSetter{
-		Value:  nopValue{},
-		isBool: elemTyp.Kind() == reflect.Bool,
-		setter: func(s string) error {
+	var fn func(s string) error
+	if sep == "" {
+		fn = func(s string) error {
 			if err := valGet.Set(s); err != nil {
 				return err
 			}
@@ -350,7 +352,40 @@ func makeSliceFlag(fs *flag.FlagSet, elemFlag *flag.Flag, elemTyp reflect.Type, 
 
 			fldVal.Set(reflect.Append(fldVal, newVal))
 			return nil
-		},
+		}
+	} else {
+		fn = func(s string) error {
+			parts := strings.Split(s, sep)
+			newVals := make([]reflect.Value, 0, len(parts))
+			for _, p := range parts {
+				if err := valGet.Set(p); err != nil {
+					return err
+				}
+
+				newVal := reflect.ValueOf(valGet.Get())
+				if newVal.Kind() == reflect.Pointer {
+					if elemTyp.Kind() != reflect.Pointer {
+						newVal = reflect.ValueOf(newVal.Elem().Interface())
+					} else {
+						// must clone the value, not reuse the same destination as all
+						// values in the slice would be the same pointer.
+						newPtr := createSliceElem(elemTyp)
+						newPtr.Elem().Set(newVal.Elem())
+						newVal = newPtr
+					}
+				}
+				newVals = append(newVals, newVal)
+			}
+			sl := reflect.MakeSlice(reflect.SliceOf(elemTyp), 0, len(newVals))
+			fldVal.Set(reflect.Append(sl, newVals...))
+			return nil
+		}
+	}
+
+	flagVal := valueSetter{
+		Value:  nopValue{},
+		isBool: elemTyp.Kind() == reflect.Bool,
+		setter: fn,
 	}
 
 	fs.Var(flagVal, elemFlag.Name, "")

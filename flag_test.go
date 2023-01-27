@@ -834,3 +834,157 @@ func TestIneffectiveSliceSep(t *testing.T) {
 		_ = p.Parse([]string{"", "-i", "123"}, &f)
 	}, qt.PanicMatches, `ineffective flagSeparator attribute set on field I`)
 }
+
+type FsSep struct {
+	Ss   []string        `flag:"s,string" flagSeparator:","`
+	Is   []int64         `flag:"i" flagSeparator:","`
+	Us   []uint          `flag:"u" flagSeparator:","`
+	Bs   []bool          `flag:"b" flagSeparator:","`
+	Fs   []float64       `flag:"f" flagSeparator:","`
+	Ts   []time.Duration `flag:"t" flagSeparator:","`
+	Rs   []reverseVal    `flag:"rev" flagSeparator:","`
+	Prs  []*reverseVal   `flag:"prev" flagSeparator:","`
+	Uvs  []upcaseVal     `flag:"up" flagSeparator:","`
+	Puvs []*upcaseVal    `flag:"pup" flagSeparator:","`
+
+	counts map[string]int
+}
+
+var equalsFsSep = qt.CmpEquals(cmp.AllowUnexported(FsSep{}))
+
+func (f *FsSep) SetFlagsCount(flags map[string]int) {
+	f.counts = flags
+}
+
+func TestParseSliceFlagsSep(t *testing.T) {
+	c := qt.New(t)
+
+	cases := []struct {
+		args []string // args only, the 0-index is automatically added in test
+		want *FsSep
+		err  string
+	}{
+		{
+			want: &FsSep{},
+		},
+		{
+			args: []string{"-s", "a,b,c"},
+			want: &FsSep{
+				Ss:     []string{"a", "b", "c"},
+				counts: map[string]int{"s": 1},
+			},
+		},
+		{
+			args: []string{"-s", "a,b", "--string", "c,d", "-s", "e,f"},
+			want: &FsSep{
+				Ss:     []string{"e", "f"},
+				counts: map[string]int{"s": 3},
+			},
+		},
+		{
+			args: []string{"-i", "1,2,3", "-s", "x", "arg", "-i", "4,5,6"},
+			want: &FsSep{
+				Ss:     []string{"x"},
+				Is:     []int64{4, 5, 6},
+				counts: map[string]int{"i": 2, "s": 1},
+			},
+		},
+		{
+			args: []string{"-i", "0", "-s", ""},
+			want: &FsSep{
+				Ss:     []string{""},
+				Is:     []int64{0},
+				counts: map[string]int{"i": 1, "s": 1},
+			},
+		},
+		{
+			args: []string{"-u", "1", "-u", "x"},
+			want: &FsSep{},
+			err:  `invalid value "x" for flag -u`,
+		},
+		{
+			args: []string{"-u", "1,2,3", "-b", "-f", "3.1415,-1e10", "-b"},
+			want: &FsSep{
+				Us:     []uint{1, 2, 3},
+				Bs:     []bool{true},
+				Fs:     []float64{3.1415, -1e10},
+				counts: map[string]int{"b": 2, "f": 1, "u": 1},
+			},
+		},
+		{
+			args: []string{"-t", "1s", "-t", "24h,10m"},
+			want: &FsSep{
+				Ts:     []time.Duration{24 * time.Hour, 10 * time.Minute},
+				counts: map[string]int{"t": 2},
+			},
+		},
+		{
+			args: []string{"-t", "1s,nope"},
+			err:  `invalid value "1s,nope" for flag -t: parse error`,
+		},
+		{
+			args: []string{"-b=true,false,true"},
+			want: &FsSep{
+				Bs:     []bool{true, false, true},
+				counts: map[string]int{"b": 1},
+			},
+		},
+		{
+			args: []string{"-rev", "abc", "-rev", "def,ghi"},
+			want: &FsSep{
+				Rs:     []reverseVal{"fed", "ihg"},
+				counts: map[string]int{"rev": 2},
+			},
+		},
+		{
+			args: []string{"-rev", "abc,def,ghi", "-rev", "jkl,mno"},
+			want: &FsSep{
+				Rs:     []reverseVal{"lkj", "onm"},
+				counts: map[string]int{"rev": 2},
+			},
+		},
+		{
+			args: []string{"-prev", "abc,def,ghi", "-prev", "jkl,mno"},
+			want: &FsSep{
+				Prs:    []*reverseVal{ptrRev("lkj"), ptrRev("onm")},
+				counts: map[string]int{"prev": 2},
+			},
+		},
+		{
+			args: []string{"-up", "abc,def", "-up", "ghi,jkl,mno"},
+			want: &FsSep{
+				Uvs:    []upcaseVal{"GHI", "JKL", "MNO"},
+				counts: map[string]int{"up": 2},
+			},
+		},
+		{
+			args: []string{"-pup", "abc,def,ghi", "-pup", "jkl"},
+			want: &FsSep{
+				Puvs:   []*upcaseVal{ptrUpc("JKL")},
+				counts: map[string]int{"pup": 2},
+			},
+		},
+		{
+			args: []string{"-b=false,toto"},
+			err:  `invalid boolean value "false,toto" for -b: parse error`,
+		},
+	}
+
+	var p Parser
+	for _, tc := range cases {
+		c.Run(strings.Join(tc.args, " "), func(c *qt.C) {
+			var fs FsSep
+			args := append([]string{""}, tc.args...)
+			err := p.Parse(args, &fs)
+
+			if tc.err != "" {
+				c.Assert(err, qt.IsNotNil)
+				c.Assert(err.Error(), qt.Contains, tc.err)
+				return
+			}
+
+			c.Assert(err, qt.IsNil)
+			c.Assert(&fs, equalsFsSep, tc.want)
+		})
+	}
+}
