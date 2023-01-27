@@ -60,7 +60,7 @@ func main() {
 ### v0.3
 
 * Requires Go 1.19+.
-* Use `github.com/caarlos0/env/v6` as environment-variable parsing package instead of `github.com/kelseyhightower/envconfig`.
+* Use `github.com/caarlos0/env/v6` as environment-variable parsing package instead of `github.com/kelseyhightower/envconfig` (`envconfig` is a great package but `env/v6` aligns better with the flags behaviour and has a more consistent struct tag usage).
 * `SetFlags` now reports set flags using a canonical flag name (the first flag defined on the field). Which of the various flag aliases was used should not matter (if it does, define distinct fields instead).
 * More data types are supported for flags (not a breaking change _per se_, but can mean that a `flag` struct tag that would've failed on older versions would now be valid).
 
